@@ -1,0 +1,17 @@
+# Local runtime data (SQLite db, etc.)
+data/
+
+# Python
+**/.venv/
+**/__pycache__/
+*.pyc
+
+# Node
+**/node_modules/
+**/dist/
+**/.vite/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
