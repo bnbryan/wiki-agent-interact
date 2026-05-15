@@ -1,0 +1,44 @@
+import aiosqlite
+from .config import DB_PATH
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS wikis (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    category     TEXT NOT NULL,
+    filename     TEXT NOT NULL,
+    original     TEXT NOT NULL,
+    size_bytes   INTEGER NOT NULL,
+    uploaded_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (category, filename)
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id          TEXT PRIMARY KEY,
+    title       TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT NOT NULL,
+    role        TEXT NOT NULL,  -- user | assistant
+    content     TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+"""
+
+
+async def init_db() -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executescript(SCHEMA)
+        await db.commit()
+
+
+async def get_db():
+    db = await aiosqlite.connect(DB_PATH)
+    db.row_factory = aiosqlite.Row
+    try:
+        yield db
+    finally:
+        await db.close()
