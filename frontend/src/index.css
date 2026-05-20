@@ -14,6 +14,15 @@ body {
     "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
+.wordmark {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-feature-settings: "ss01", "cv11";
+}
+
 .prose-chat :where(p, ul, ol, pre) {
   @apply my-2;
 }

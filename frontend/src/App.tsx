@@ -7,7 +7,7 @@ export default function App() {
     <div className="flex h-full flex-col">
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3">
-          <div className="text-lg font-semibold">Wiki Agent</div>
+          <img src="/logo.png" alt="Wiki Agent" className="h-12 w-auto" />
           <nav className="flex gap-1 text-sm">
             <Tab to="/wiki" label="上传 Wiki" />
             <Tab to="/chat" label="提问知识" />

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 
@@ -7,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..agent import ask
+from ..config import DB_PATH
 from ..db import get_db
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -72,32 +74,55 @@ async def ask_stream(body: AskBody, db: aiosqlite.Connection = Depends(get_db)):
     )
     await db.commit()
 
+    async def save_assistant(text: str) -> None:
+        # Fresh connection — the request-scoped one is closed by the time
+        # the streaming generator finishes (or is cancelled).
+        async with aiosqlite.connect(DB_PATH) as adb:
+            await adb.execute(
+                "INSERT INTO messages (session_id, role, content) VALUES (?, 'assistant', ?)",
+                (session_id, text),
+            )
+            await adb.commit()
+
     async def event_stream():
         # Tell the client which session this stream belongs to.
         yield f"event: session\ndata: {json.dumps({'session_id': session_id})}\n\n"
 
         full_answer: list[str] = []
+        interrupted = False
+        error_msg: str | None = None
         try:
             async for chunk in ask(body.message, history):
                 full_answer.append(chunk)
                 payload = json.dumps({"text": chunk}, ensure_ascii=False)
                 yield f"event: delta\ndata: {payload}\n\n"
-        except Exception as exc:  # surface to client and stop
-            payload = json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except asyncio.CancelledError:
+            # Client aborted the SSE — close the SDK generator (which kills
+            # the claude subprocess) and persist what we got so far.
+            interrupted = True
+        except Exception as exc:
+            error_msg = str(exc)
+
+        text = "".join(full_answer)
+        if interrupted:
+            text = (text + "\n\n_[已中断]_") if text else "_[已中断]_"
+        elif error_msg and not text:
+            text = f"⚠️ {error_msg}"
+
+        if text:
+            # Shield so a still-propagating cancellation doesn't kill the write.
+            try:
+                await asyncio.shield(save_assistant(text))
+            except asyncio.CancelledError:
+                pass
+
+        if interrupted:
+            # Honor the cancellation; client is already gone, no more yields.
+            return
+        if error_msg:
+            payload = json.dumps({"error": error_msg}, ensure_ascii=False)
             yield f"event: error\ndata: {payload}\n\n"
             return
-
-        # Persist the assistant message after streaming completes. We open a
-        # fresh connection because the request-scoped one will be closed by the
-        # time this generator finishes.
-        from ..config import DB_PATH
-
-        async with aiosqlite.connect(DB_PATH) as adb:
-            await adb.execute(
-                "INSERT INTO messages (session_id, role, content) VALUES (?, 'assistant', ?)",
-                (session_id, "".join(full_answer)),
-            )
-            await adb.commit()
 
         yield "event: done\ndata: {}\n\n"
 

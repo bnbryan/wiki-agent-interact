@@ -93,28 +93,35 @@ export async function streamAsk(
   const decoder = new TextDecoder();
   let buf = "";
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
 
-    // SSE events are separated by a blank line.
-    let sep: number;
-    while ((sep = buf.indexOf("\n\n")) !== -1) {
-      const raw = buf.slice(0, sep);
-      buf = buf.slice(sep + 2);
-      const evt = parseSseEvent(raw);
-      if (!evt) continue;
-      if (evt.event === "session") {
-        handlers.onSession?.(JSON.parse(evt.data).session_id);
-      } else if (evt.event === "delta") {
-        handlers.onDelta?.(JSON.parse(evt.data).text);
-      } else if (evt.event === "error") {
-        handlers.onError?.(JSON.parse(evt.data).error);
-      } else if (evt.event === "done") {
-        handlers.onDone?.();
+      // SSE events are separated by a blank line.
+      let sep: number;
+      while ((sep = buf.indexOf("\n\n")) !== -1) {
+        const raw = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        const evt = parseSseEvent(raw);
+        if (!evt) continue;
+        if (evt.event === "session") {
+          handlers.onSession?.(JSON.parse(evt.data).session_id);
+        } else if (evt.event === "delta") {
+          handlers.onDelta?.(JSON.parse(evt.data).text);
+        } else if (evt.event === "error") {
+          handlers.onError?.(JSON.parse(evt.data).error);
+        } else if (evt.event === "done") {
+          handlers.onDone?.();
+        }
       }
     }
+  } catch (e: unknown) {
+    // User-initiated abort: stay silent (caller already knows).
+    if (signal?.aborted) return;
+    const msg = e instanceof Error ? e.message : String(e);
+    handlers.onError?.(msg);
   }
 }
 

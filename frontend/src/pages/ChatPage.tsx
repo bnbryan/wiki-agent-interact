@@ -23,6 +23,9 @@ export default function ChatPage() {
   useEffect(() => {
     currentIdRef.current = currentId;
   }, [currentId]);
+  // Used to interrupt the in-flight SSE stream.
+  const abortRef = useRef<AbortController | null>(null);
+  const stop = () => abortRef.current?.abort();
 
   const refreshSessions = useCallback(async () => {
     setSessions(await listSessions());
@@ -67,6 +70,9 @@ export default function ChatPage() {
       { role: "assistant", content: "" },
     ]);
 
+    const ac = new AbortController();
+    abortRef.current = ac;
+
     await streamAsk(
       { session_id: startedFromId, message: text },
       {
@@ -102,7 +108,24 @@ export default function ChatPage() {
           });
         },
       },
+      ac.signal,
     );
+
+    // If the user clicked 停止 mid-stream, mark the partial answer.
+    if (ac.signal.aborted && isStillOnThisStream()) {
+      setMessages((m) => {
+        const next = m.slice();
+        const last = next[next.length - 1];
+        if (last?.role === "assistant") {
+          next[next.length - 1] = {
+            ...last,
+            content: (last.content || "") + "\n\n_[已中断]_",
+          };
+        }
+        return next;
+      });
+    }
+    abortRef.current = null;
 
     // Stream done. If this was a new chat and the user is still sitting on the
     // new-chat view, bind currentId to the real session id now. The useEffect
@@ -193,13 +216,22 @@ export default function ChatPage() {
               }}
               disabled={streaming}
             />
-            <button
-              className="rounded-lg bg-slate-900 px-4 py-2 text-sm text-white disabled:opacity-40"
-              onClick={send}
-              disabled={streaming || !input.trim()}
-            >
-              {streaming ? "回答中…" : "发送"}
-            </button>
+            {streaming ? (
+              <button
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm text-white hover:bg-red-700"
+                onClick={stop}
+              >
+                停止
+              </button>
+            ) : (
+              <button
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm text-white disabled:opacity-40"
+                onClick={send}
+                disabled={!input.trim()}
+              >
+                发送
+              </button>
+            )}
           </div>
         </div>
       </section>
