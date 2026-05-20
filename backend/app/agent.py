@@ -12,6 +12,7 @@ from typing import AsyncIterator
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    StreamEvent,
     TextBlock,
     query,
 )
@@ -41,10 +42,21 @@ async def ask(question: str, history: list[dict] | None = None) -> AsyncIterator
         cwd=str(WIKI_REPO_DIR),
         setting_sources=["project"],  # load the wiki repo's CLAUDE.md + .claude/
         permission_mode="bypassPermissions",  # unattended server-side use
+        include_partial_messages=True,  # token-level streaming
     )
 
     async for msg in query(prompt=prompt, options=options):
-        if isinstance(msg, AssistantMessage):
-            for block in msg.content:
-                if isinstance(block, TextBlock) and block.text:
-                    yield block.text
+        if isinstance(msg, StreamEvent):
+            # Forward only assistant text deltas; ignore tool-use deltas etc.
+            event = msg.event or {}
+            if event.get("type") == "content_block_delta":
+                delta = event.get("delta") or {}
+                if delta.get("type") == "text_delta":
+                    text = delta.get("text") or ""
+                    if text:
+                        yield text
+        elif isinstance(msg, AssistantMessage):
+            # With partial streaming on, AssistantMessage is the consolidated
+            # final form — we've already streamed its text via StreamEvents,
+            # so skip it to avoid duplicating output.
+            pass

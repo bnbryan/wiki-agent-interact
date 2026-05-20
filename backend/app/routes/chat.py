@@ -101,4 +101,12 @@ async def ask_stream(body: AskBody, db: aiosqlite.Connection = Depends(get_db)):
 
         yield "event: done\ndata: {}\n\n"
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

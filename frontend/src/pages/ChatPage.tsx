@@ -17,6 +17,12 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Tracks the latest selected session so streaming callbacks can read it
+  // without going stale, and so we can detect mid-stream session switches.
+  const currentIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    currentIdRef.current = currentId;
+  }, [currentId]);
 
   const refreshSessions = useCallback(async () => {
     setSessions(await listSessions());
@@ -47,6 +53,14 @@ export default function ChatPage() {
     setInput("");
     setStreaming(true);
 
+    // The view this stream originated from. null = "new chat" view.
+    // We deliberately do NOT change currentId during streaming — promoting it
+    // here would trigger the useEffect that refetches messages from the DB
+    // and wipe the assistant placeholder we just appended.
+    const startedFromId = currentId;
+    let streamSessionId: string | null = startedFromId;
+    const isStillOnThisStream = () => currentIdRef.current === startedFromId;
+
     setMessages((m) => [
       ...m,
       { role: "user", content: text },
@@ -54,15 +68,16 @@ export default function ChatPage() {
     ]);
 
     await streamAsk(
-      { session_id: currentId, message: text },
+      { session_id: startedFromId, message: text },
       {
         onSession: (id) => {
-          if (!currentId) {
-            setCurrentId(id);
-            refreshSessions();
-          }
+          streamSessionId = id;
+          // Refresh the sidebar so the new session chip shows up, but don't
+          // switch currentId yet — the user is still on the originating view.
+          if (startedFromId === null) refreshSessions();
         },
         onDelta: (chunk) => {
+          if (!isStillOnThisStream()) return;
           setMessages((m) => {
             const next = m.slice();
             const last = next[next.length - 1];
@@ -76,6 +91,7 @@ export default function ChatPage() {
           });
         },
         onError: (err) => {
+          if (!isStillOnThisStream()) return;
           setMessages((m) => {
             const next = m.slice();
             next[next.length - 1] = {
@@ -88,6 +104,17 @@ export default function ChatPage() {
       },
     );
 
+    // Stream done. If this was a new chat and the user is still sitting on the
+    // new-chat view, bind currentId to the real session id now. The useEffect
+    // will refetch from the DB — which now has both messages persisted, so
+    // there's no flicker.
+    if (
+      startedFromId === null &&
+      streamSessionId !== null &&
+      currentIdRef.current === null
+    ) {
+      setCurrentId(streamSessionId);
+    }
     setStreaming(false);
     refreshSessions();
   };
@@ -155,7 +182,11 @@ export default function ChatPage() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
+                if (
+                  e.key === "Enter" &&
+                  !e.shiftKey &&
+                  !e.nativeEvent.isComposing
+                ) {
                   e.preventDefault();
                   send();
                 }
@@ -189,11 +220,17 @@ function Bubble({ msg }: { msg: Message }) {
       >
         {isUser ? (
           <div className="whitespace-pre-wrap">{msg.content}</div>
-        ) : (
+        ) : msg.content ? (
           <div className="prose-chat">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {msg.content || "…"}
+              {msg.content}
             </ReactMarkdown>
+          </div>
+        ) : (
+          <div className="typing-dots" aria-label="正在生成">
+            <span />
+            <span />
+            <span />
           </div>
         )}
       </div>
