@@ -8,7 +8,7 @@ prompt, allowed tools, skills, sub-agents — is defined inside the wiki repo
 from __future__ import annotations
 
 import os
-from typing import AsyncIterator, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -49,6 +49,14 @@ async def ask(
 
     prompt = f"{history_block}User question: {question}"
 
+    async def prompt_stream() -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "type": "user",
+            "message": {"role": "user", "content": prompt},
+            "parent_tool_use_id": None,
+            "session_id": "",
+        }
+
     async def can_use_tool(
         tool_name: str,
         tool_input: dict,
@@ -84,7 +92,8 @@ async def ask(
     )
 
     streamed = False
-    async for msg in query(prompt=prompt, options=options):
+    sdk_prompt = prompt_stream() if permission_handler is not None else prompt
+    async for msg in query(prompt=sdk_prompt, options=options):
         if isinstance(msg, StreamEvent):
             # Forward only assistant text deltas; ignore tool-use deltas etc.
             event = msg.event or {}
