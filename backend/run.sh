@@ -9,10 +9,14 @@ if [ -z "${WIKI_REPO_PATH:-}" ]; then
   exit 1
 fi
 
-if [ ! -d ".venv" ]; then
+if [ ! -f ".venv/bin/activate" ]; then
+  rm -rf .venv
   python3 -m venv .venv
 fi
 source .venv/bin/activate
-pip install -q -r requirements.txt
 
-exec uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+if [ "${SKIP_PIP_INSTALL:-0}" != "1" ]; then
+  pip install -q -r requirements.txt
+fi
+
+exec python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
