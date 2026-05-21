@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections import deque
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from claude_agent_sdk import (
@@ -27,6 +28,19 @@ CLAUDE_PERMISSION_MODE = os.environ.get("CLAUDE_PERMISSION_MODE", "default")
 CLAUDE_CLI_PATH = os.environ.get("CLAUDE_CLI_PATH") or shutil.which("claude")
 
 PermissionHandler = Callable[[dict], Awaitable[bool]]
+
+
+def _format_cli_error(
+    message: str,
+    stderr_lines: deque[str],
+    details: list[str] | None = None,
+) -> str:
+    parts = [message]
+    if details:
+        parts.extend(detail for detail in details if detail)
+    if stderr_lines:
+        parts.append("Claude CLI stderr:\n" + "\n".join(stderr_lines))
+    return "\n\n".join(parts)
 
 
 async def ask(
@@ -50,6 +64,10 @@ async def ask(
         history_block = "Prior conversation:\n" + "\n\n".join(rendered) + "\n\n---\n\n"
 
     prompt = f"{history_block}User question: {question}"
+    stderr_lines: deque[str] = deque(maxlen=30)
+
+    def collect_stderr(line: str) -> None:
+        stderr_lines.append(line)
 
     async def prompt_stream() -> AsyncIterator[dict[str, Any]]:
         yield {
@@ -92,28 +110,56 @@ async def ask(
         permission_mode=CLAUDE_PERMISSION_MODE,
         can_use_tool=can_use_tool if permission_handler is not None else None,
         include_partial_messages=True,  # token-level streaming
+        stderr=collect_stderr,
     )
 
     streamed = False
     sdk_prompt = prompt_stream() if permission_handler is not None else prompt
-    async for msg in query(prompt=sdk_prompt, options=options):
-        if isinstance(msg, StreamEvent):
-            # Forward only assistant text deltas; ignore tool-use deltas etc.
-            event = msg.event or {}
-            if event.get("type") == "content_block_delta":
-                delta = event.get("delta") or {}
-                if delta.get("type") == "text_delta":
-                    text = delta.get("text") or ""
-                    if text:
-                        streamed = True
-                        yield text
-        elif isinstance(msg, AssistantMessage):
-            # With partial streaming on, AssistantMessage is the consolidated
-            # final form — we've already streamed its text via StreamEvents,
-            # so skip it to avoid duplicating output.
-            pass
-        elif isinstance(msg, ResultMessage):
-            if msg.subtype != "success":
-                raise RuntimeError(f"Claude Code returned {msg.subtype}")
-            if not streamed and msg.result:
-                yield msg.result
+    try:
+        async for msg in query(prompt=sdk_prompt, options=options):
+            if isinstance(msg, StreamEvent):
+                # Forward only assistant text deltas; ignore tool-use deltas etc.
+                event = msg.event or {}
+                if event.get("type") == "content_block_delta":
+                    delta = event.get("delta") or {}
+                    if delta.get("type") == "text_delta":
+                        text = delta.get("text") or ""
+                        if text:
+                            streamed = True
+                            yield text
+            elif isinstance(msg, AssistantMessage):
+                # With partial streaming on, AssistantMessage is the consolidated
+                # final form — we've already streamed its text via StreamEvents,
+                # so skip it to avoid duplicating output.
+                pass
+            elif isinstance(msg, ResultMessage):
+                if msg.is_error:
+                    details = []
+                    if msg.errors:
+                        details.extend(msg.errors)
+                    if msg.api_error_status:
+                        details.append(f"API error status: {msg.api_error_status}")
+                    if msg.permission_denials:
+                        details.append(f"Permission denials: {msg.permission_denials}")
+                    if msg.stop_reason:
+                        details.append(f"Stop reason: {msg.stop_reason}")
+                    # Use details for the error message instead of subtype to avoid
+                    # contradictions like "error result: success" when is_error=True
+                    # but subtype is "success" (e.g., with permission_denials)
+                    error_summary = "; ".join(details) if details else "Unknown error"
+                    raise RuntimeError(
+                        _format_cli_error(
+                            f"Claude Code returned an error result: {error_summary}",
+                            stderr_lines,
+                            details,
+                        )
+                    )
+                if msg.subtype != "success":
+                    raise RuntimeError(f"Claude Code returned {msg.subtype}")
+                if not streamed and msg.result:
+                    yield msg.result
+    except Exception as exc:
+        message = str(exc)
+        if stderr_lines and "Claude CLI stderr:" not in message:
+            message = _format_cli_error(message, stderr_lines)
+        raise RuntimeError(message) from exc
