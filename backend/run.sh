@@ -17,8 +17,4 @@ source .venv/bin/activate
 
 echo "Claude CLI: ${CLAUDE_CLI_PATH:-$(command -v claude || true)}"
 
-if [ "${SKIP_PIP_INSTALL:-0}" != "1" ]; then
-  pip install -q -r requirements.txt
-fi
-
-exec python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+exec uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
