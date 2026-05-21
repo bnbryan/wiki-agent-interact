@@ -3,7 +3,9 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Message,
+  PermissionRequest,
   Session,
+  answerPermission,
   deleteSession,
   getSessionMessages,
   listSessions,
@@ -16,6 +18,10 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [permissionRequests, setPermissionRequests] = useState<
+    PermissionRequest[]
+  >([]);
+  const [permissionError, setPermissionError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Tracks the latest selected session so streaming callbacks can read it
   // without going stale, and so we can detect mid-stream session switches.
@@ -25,7 +31,10 @@ export default function ChatPage() {
   }, [currentId]);
   // Used to interrupt the in-flight SSE stream.
   const abortRef = useRef<AbortController | null>(null);
-  const stop = () => abortRef.current?.abort();
+  const stop = () => {
+    abortRef.current?.abort();
+    setPermissionRequests([]);
+  };
 
   const refreshSessions = useCallback(async () => {
     setSessions(await listSessions());
@@ -55,6 +64,8 @@ export default function ChatPage() {
     if (!text || streaming) return;
     setInput("");
     setStreaming(true);
+    setPermissionRequests([]);
+    setPermissionError(null);
 
     // The view this stream originated from. null = "new chat" view.
     // We deliberately do NOT change currentId during streaming — promoting it
@@ -96,8 +107,19 @@ export default function ChatPage() {
             return next;
           });
         },
+        onPermission: (request) => {
+          if (!isStillOnThisStream()) return;
+          setPermissionError(null);
+          setPermissionRequests((items) => {
+            if (items.some((item) => item.request_id === request.request_id)) {
+              return items;
+            }
+            return [...items, request];
+          });
+        },
         onError: (err) => {
           if (!isStillOnThisStream()) return;
+          setPermissionRequests([]);
           setMessages((m) => {
             const next = m.slice();
             next[next.length - 1] = {
@@ -126,6 +148,7 @@ export default function ChatPage() {
       });
     }
     abortRef.current = null;
+    setPermissionRequests([]);
 
     // Stream done. If this was a new chat and the user is still sitting on the
     // new-chat view, bind currentId to the real session id now. The useEffect
@@ -140,6 +163,19 @@ export default function ChatPage() {
     }
     setStreaming(false);
     refreshSessions();
+  };
+
+  const respondToPermission = async (requestId: string, allow: boolean) => {
+    setPermissionError(null);
+    try {
+      await answerPermission(requestId, allow);
+      setPermissionRequests((items) =>
+        items.filter((item) => item.request_id !== requestId),
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setPermissionError(msg);
+    }
   };
 
   return (
@@ -196,6 +232,14 @@ export default function ChatPage() {
           ))}
         </div>
 
+        {permissionRequests.length > 0 && (
+          <PermissionPanel
+            requests={permissionRequests}
+            error={permissionError}
+            onAnswer={respondToPermission}
+          />
+        )}
+
         <div className="border-t border-slate-100 p-3">
           <div className="flex items-end gap-2">
             <textarea
@@ -235,6 +279,66 @@ export default function ChatPage() {
           </div>
         </div>
       </section>
+    </div>
+  );
+}
+
+function PermissionPanel({
+  requests,
+  error,
+  onAnswer,
+}: {
+  requests: PermissionRequest[];
+  error: string | null;
+  onAnswer: (requestId: string, allow: boolean) => void;
+}) {
+  return (
+    <div className="border-t border-amber-200 bg-amber-50 px-4 py-3">
+      <div className="space-y-3">
+        {requests.map((request) => (
+          <div
+            key={request.request_id}
+            className="rounded-lg border border-amber-200 bg-white p-3 shadow-sm"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-slate-900">
+                  {request.title ||
+                    request.description ||
+                    request.display_name ||
+                    "Claude 请求使用工具"}
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-700">
+                    {request.tool_name}
+                  </span>
+                  {request.blocked_path && (
+                    <span className="truncate">路径: {request.blocked_path}</span>
+                  )}
+                </div>
+              </div>
+              <div className="flex shrink-0 gap-2">
+                <button
+                  className="rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+                  onClick={() => onAnswer(request.request_id, false)}
+                >
+                  拒绝
+                </button>
+                <button
+                  className="rounded-md bg-slate-900 px-3 py-1.5 text-sm text-white hover:bg-slate-700"
+                  onClick={() => onAnswer(request.request_id, true)}
+                >
+                  允许
+                </button>
+              </div>
+            </div>
+            <pre className="mt-3 max-h-40 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-100">
+              {JSON.stringify(request.tool_input, null, 2)}
+            </pre>
+          </div>
+        ))}
+        {error && <div className="text-xs text-red-600">{error}</div>}
+      </div>
     </div>
   );
 }

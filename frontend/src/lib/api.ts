@@ -21,6 +21,19 @@ export interface Message {
   created_at?: string;
 }
 
+export interface PermissionRequest {
+  request_id: string;
+  session_id: string;
+  tool_name: string;
+  tool_input: unknown;
+  tool_use_id?: string | null;
+  title?: string | null;
+  display_name?: string | null;
+  description?: string | null;
+  blocked_path?: string | null;
+  decision_reason?: string | null;
+}
+
 export async function listWikis(): Promise<WikiItem[]> {
   const r = await fetch("/api/wiki/list");
   if (!r.ok) throw new Error(await r.text());
@@ -67,12 +80,25 @@ export async function deleteSession(id: string): Promise<void> {
   if (!r.ok) throw new Error(await r.text());
 }
 
+export async function answerPermission(
+  requestId: string,
+  allow: boolean,
+): Promise<void> {
+  const r = await fetch(`/api/chat/permissions/${requestId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ allow }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+
 /** Stream a chat answer. Parses the FastAPI SSE response chunk-by-chunk. */
 export async function streamAsk(
   body: { session_id: string | null; message: string },
   handlers: {
     onSession?: (id: string) => void;
     onDelta?: (text: string) => void;
+    onPermission?: (request: PermissionRequest) => void;
     onError?: (msg: string) => void;
     onDone?: () => void;
   },
@@ -110,6 +136,8 @@ export async function streamAsk(
           handlers.onSession?.(JSON.parse(evt.data).session_id);
         } else if (evt.event === "delta") {
           handlers.onDelta?.(JSON.parse(evt.data).text);
+        } else if (evt.event === "permission") {
+          handlers.onPermission?.(JSON.parse(evt.data));
         } else if (evt.event === "error") {
           handlers.onError?.(JSON.parse(evt.data).error);
         } else if (evt.event === "done") {

@@ -1,9 +1,11 @@
 import asyncio
 import json
 import uuid
+from dataclasses import dataclass
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -17,6 +19,19 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 class AskBody(BaseModel):
     session_id: str | None = None
     message: str
+
+
+class PermissionDecisionBody(BaseModel):
+    allow: bool
+
+
+@dataclass
+class PendingPermission:
+    session_id: str
+    future: asyncio.Future[bool]
+
+
+_pending_permissions: dict[str, PendingPermission] = {}
 
 
 @router.get("/sessions")
@@ -47,6 +62,16 @@ async def delete_session(
     await db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
     await db.commit()
     return {"deleted": session_id}
+
+
+@router.post("/permissions/{request_id}")
+async def answer_permission(request_id: str, body: PermissionDecisionBody):
+    pending = _pending_permissions.pop(request_id, None)
+    if pending is None:
+        raise HTTPException(404, "Permission request not found or already answered")
+    if not pending.future.done():
+        pending.future.set_result(body.allow)
+    return {"ok": True}
 
 
 @router.post("/ask")
@@ -91,17 +116,74 @@ async def ask_stream(body: AskBody, db: aiosqlite.Connection = Depends(get_db)):
         full_answer: list[str] = []
         interrupted = False
         error_msg: str | None = None
+        pending_for_stream: set[str] = set()
+        events: asyncio.Queue[dict] = asyncio.Queue()
+
+        async def request_permission(payload: dict) -> bool:
+            request_id = str(uuid.uuid4())
+            future = asyncio.get_running_loop().create_future()
+            pending_for_stream.add(request_id)
+            _pending_permissions[request_id] = PendingPermission(
+                session_id=session_id,
+                future=future,
+            )
+            await events.put(
+                {
+                    "type": "permission",
+                    "data": {
+                        "request_id": request_id,
+                        "session_id": session_id,
+                        **jsonable_encoder(payload),
+                    },
+                }
+            )
+            try:
+                return await future
+            finally:
+                pending_for_stream.discard(request_id)
+                _pending_permissions.pop(request_id, None)
+
+        async def run_agent() -> None:
+            try:
+                async for chunk in ask(body.message, history, request_permission):
+                    await events.put({"type": "delta", "text": chunk})
+            except Exception as exc:
+                await events.put({"type": "error", "error": str(exc)})
+            finally:
+                await events.put({"type": "done"})
+
+        agent_task = asyncio.create_task(run_agent())
         try:
-            async for chunk in ask(body.message, history):
-                full_answer.append(chunk)
-                payload = json.dumps({"text": chunk}, ensure_ascii=False)
-                yield f"event: delta\ndata: {payload}\n\n"
+            while True:
+                event = await events.get()
+                event_type = event["type"]
+                if event_type == "delta":
+                    chunk = event["text"]
+                    full_answer.append(chunk)
+                    payload = json.dumps({"text": chunk}, ensure_ascii=False)
+                    yield f"event: delta\ndata: {payload}\n\n"
+                elif event_type == "permission":
+                    payload = json.dumps(event["data"], ensure_ascii=False)
+                    yield f"event: permission\ndata: {payload}\n\n"
+                elif event_type == "error":
+                    error_msg = event["error"]
+                    break
+                elif event_type == "done":
+                    break
         except asyncio.CancelledError:
             # Client aborted the SSE — close the SDK generator (which kills
             # the claude subprocess) and persist what we got so far.
             interrupted = True
+            agent_task.cancel()
         except Exception as exc:
             error_msg = str(exc)
+        finally:
+            if not agent_task.done():
+                agent_task.cancel()
+            for request_id in list(pending_for_stream):
+                pending = _pending_permissions.pop(request_id, None)
+                if pending and not pending.future.done():
+                    pending.future.set_result(False)
 
         text = "".join(full_answer)
         if interrupted:

@@ -8,13 +8,15 @@ prompt, allowed tools, skills, sub-agents — is defined inside the wiki repo
 from __future__ import annotations
 
 import os
-from typing import AsyncIterator
+from typing import AsyncIterator, Awaitable, Callable
 
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    PermissionResultAllow,
+    PermissionResultDeny,
+    ResultMessage,
     StreamEvent,
-    TextBlock,
     query,
 )
 
@@ -22,8 +24,14 @@ from .config import WIKI_REPO_DIR
 
 CLAUDE_PERMISSION_MODE = os.environ.get("CLAUDE_PERMISSION_MODE", "default")
 
+PermissionHandler = Callable[[dict], Awaitable[bool]]
 
-async def ask(question: str, history: list[dict] | None = None) -> AsyncIterator[str]:
+
+async def ask(
+    question: str,
+    history: list[dict] | None = None,
+    permission_handler: PermissionHandler | None = None,
+) -> AsyncIterator[str]:
     """Stream the agent's textual answer.
 
     `history` is a list of {role, content} dicts from prior turns; we fold it
@@ -41,13 +49,41 @@ async def ask(question: str, history: list[dict] | None = None) -> AsyncIterator
 
     prompt = f"{history_block}User question: {question}"
 
+    async def can_use_tool(
+        tool_name: str,
+        tool_input: dict,
+        context,
+    ) -> PermissionResultAllow | PermissionResultDeny:
+        if permission_handler is None:
+            return PermissionResultDeny(
+                message="Tool use requires permission, but no permission handler is configured."
+            )
+
+        allowed = await permission_handler(
+            {
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+                "tool_use_id": context.tool_use_id,
+                "title": context.title,
+                "display_name": context.display_name,
+                "description": context.description,
+                "blocked_path": context.blocked_path,
+                "decision_reason": context.decision_reason,
+            }
+        )
+        if allowed:
+            return PermissionResultAllow()
+        return PermissionResultDeny(message="User denied this tool use.")
+
     options = ClaudeAgentOptions(
         cwd=str(WIKI_REPO_DIR),
         setting_sources=["project"],  # load the wiki repo's CLAUDE.md + .claude/
         permission_mode=CLAUDE_PERMISSION_MODE,
+        can_use_tool=can_use_tool if permission_handler is not None else None,
         include_partial_messages=True,  # token-level streaming
     )
 
+    streamed = False
     async for msg in query(prompt=prompt, options=options):
         if isinstance(msg, StreamEvent):
             # Forward only assistant text deltas; ignore tool-use deltas etc.
@@ -57,9 +93,15 @@ async def ask(question: str, history: list[dict] | None = None) -> AsyncIterator
                 if delta.get("type") == "text_delta":
                     text = delta.get("text") or ""
                     if text:
+                        streamed = True
                         yield text
         elif isinstance(msg, AssistantMessage):
             # With partial streaming on, AssistantMessage is the consolidated
             # final form — we've already streamed its text via StreamEvents,
             # so skip it to avoid duplicating output.
             pass
+        elif isinstance(msg, ResultMessage):
+            if msg.subtype != "success":
+                raise RuntimeError(f"Claude Code returned {msg.subtype}")
+            if not streamed and msg.result:
+                yield msg.result
