@@ -177,6 +177,7 @@ async def ask_stream(body: AskBody, db: aiosqlite.Connection = Depends(get_db)):
             agent_task.cancel()
         except Exception as exc:
             error_msg = str(exc)
+            print(f"[ERROR] Agent exception: {exc}", flush=True)
         finally:
             if not agent_task.done():
                 agent_task.cancel()

@@ -160,7 +160,8 @@ async def ask(
                         )
                 if msg.subtype != "success":
                     raise RuntimeError(f"Claude Code returned {msg.subtype}")
-                if not streamed and msg.result:
+                # Fallback: return result even if streamed was True
+                if msg.result:
                     yield msg.result
     except Exception as exc:
         message = str(exc)
