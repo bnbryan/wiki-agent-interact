@@ -106,7 +106,7 @@ async def ask(
     options = ClaudeAgentOptions(
         cwd=str(WIKI_REPO_DIR),
         cli_path=CLAUDE_CLI_PATH,
-        setting_sources=["project"],  # load the wiki repo's CLAUDE.md + .claude/
+        setting_sources=["user", "project"],  # load user + project settings
         permission_mode=CLAUDE_PERMISSION_MODE,
         can_use_tool=can_use_tool if permission_handler is not None else None,
         include_partial_messages=True,  # token-level streaming
