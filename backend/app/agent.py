@@ -141,19 +141,23 @@ async def ask(
                         details.append(f"API error status: {msg.api_error_status}")
                     if msg.permission_denials:
                         details.append(f"Permission denials: {msg.permission_denials}")
-                    if msg.stop_reason:
+                    # Don't treat normal stop reasons as errors
+                    NORMAL_STOP_REASONS = {"stop_sequence", "max_tokens", "end_turn"}
+                    if msg.stop_reason and msg.stop_reason not in NORMAL_STOP_REASONS:
                         details.append(f"Stop reason: {msg.stop_reason}")
-                    # Use details for the error message instead of subtype to avoid
-                    # contradictions like "error result: success" when is_error=True
-                    # but subtype is "success" (e.g., with permission_denials)
-                    error_summary = "; ".join(details) if details else "Unknown error"
-                    raise RuntimeError(
-                        _format_cli_error(
-                            f"Claude Code returned an error result: {error_summary}",
-                            stderr_lines,
-                            details,
+                    # Only raise if there's an actual error, not just a normal stop
+                    if details:
+                        # Use details for the error message instead of subtype to avoid
+                        # contradictions like "error result: success" when is_error=True
+                        # but subtype is "success" (e.g., with permission_denials)
+                        error_summary = "; ".join(details) if details else "Unknown error"
+                        raise RuntimeError(
+                            _format_cli_error(
+                                f"Claude Code returned an error result: {error_summary}",
+                                stderr_lines,
+                                details,
+                            )
                         )
-                    )
                 if msg.subtype != "success":
                     raise RuntimeError(f"Claude Code returned {msg.subtype}")
                 if not streamed and msg.result:
