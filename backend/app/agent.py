@@ -7,6 +7,7 @@ prompt, allowed tools, skills, sub-agents — is defined inside the wiki repo
 """
 from __future__ import annotations
 
+import os
 from typing import AsyncIterator
 
 from claude_agent_sdk import (
@@ -18,6 +19,8 @@ from claude_agent_sdk import (
 )
 
 from .config import WIKI_REPO_DIR
+
+CLAUDE_PERMISSION_MODE = os.environ.get("CLAUDE_PERMISSION_MODE", "default")
 
 
 async def ask(question: str, history: list[dict] | None = None) -> AsyncIterator[str]:
@@ -41,7 +44,7 @@ async def ask(question: str, history: list[dict] | None = None) -> AsyncIterator
     options = ClaudeAgentOptions(
         cwd=str(WIKI_REPO_DIR),
         setting_sources=["project"],  # load the wiki repo's CLAUDE.md + .claude/
-        permission_mode="bypassPermissions",  # unattended server-side use
+        permission_mode=CLAUDE_PERMISSION_MODE,
         include_partial_messages=True,  # token-level streaming
     )
 
