@@ -8,6 +8,7 @@ prompt, allowed tools, skills, sub-agents — is defined inside the wiki repo
 from __future__ import annotations
 
 import os
+import shutil
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from claude_agent_sdk import (
@@ -23,6 +24,7 @@ from claude_agent_sdk import (
 from .config import WIKI_REPO_DIR
 
 CLAUDE_PERMISSION_MODE = os.environ.get("CLAUDE_PERMISSION_MODE", "default")
+CLAUDE_CLI_PATH = os.environ.get("CLAUDE_CLI_PATH") or shutil.which("claude")
 
 PermissionHandler = Callable[[dict], Awaitable[bool]]
 
@@ -85,6 +87,7 @@ async def ask(
 
     options = ClaudeAgentOptions(
         cwd=str(WIKI_REPO_DIR),
+        cli_path=CLAUDE_CLI_PATH,
         setting_sources=["project"],  # load the wiki repo's CLAUDE.md + .claude/
         permission_mode=CLAUDE_PERMISSION_MODE,
         can_use_tool=can_use_tool if permission_handler is not None else None,

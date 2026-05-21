@@ -15,6 +15,8 @@ if [ ! -f ".venv/bin/activate" ]; then
 fi
 source .venv/bin/activate
 
+echo "Claude CLI: ${CLAUDE_CLI_PATH:-$(command -v claude || true)}"
+
 if [ "${SKIP_PIP_INSTALL:-0}" != "1" ]; then
   pip install -q -r requirements.txt
 fi
