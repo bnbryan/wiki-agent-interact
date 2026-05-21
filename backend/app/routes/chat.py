@@ -1,10 +1,11 @@
 import asyncio
 import json
+import re
 import uuid
 from dataclasses import dataclass
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -14,6 +15,7 @@ from ..config import DB_PATH
 from ..db import get_db
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+USER_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
 class AskBody(BaseModel):
@@ -28,16 +30,32 @@ class PermissionDecisionBody(BaseModel):
 @dataclass
 class PendingPermission:
     session_id: str
+    user_id: str
     future: asyncio.Future[bool]
 
 
 _pending_permissions: dict[str, PendingPermission] = {}
 
 
+def get_user_id(
+    x_wiki_user_id: str | None = Header(default=None, alias="X-Wiki-User-Id"),
+) -> str:
+    if x_wiki_user_id is None:
+        return "default"
+    user_id = x_wiki_user_id.strip()
+    if not USER_ID_RE.fullmatch(user_id):
+        raise HTTPException(400, "Invalid user id")
+    return user_id
+
+
 @router.get("/sessions")
-async def list_sessions(db: aiosqlite.Connection = Depends(get_db)):
+async def list_sessions(
+    user_id: str = Depends(get_user_id),
+    db: aiosqlite.Connection = Depends(get_db),
+):
     cur = await db.execute(
-        "SELECT id, title, created_at FROM sessions ORDER BY created_at DESC"
+        "SELECT id, title, created_at FROM sessions WHERE user_id = ? ORDER BY created_at DESC",
+        (user_id,),
     )
     rows = await cur.fetchall()
     return [dict(r) for r in rows]
@@ -45,11 +63,19 @@ async def list_sessions(db: aiosqlite.Connection = Depends(get_db)):
 
 @router.get("/sessions/{session_id}/messages")
 async def session_messages(
-    session_id: str, db: aiosqlite.Connection = Depends(get_db)
+    session_id: str,
+    user_id: str = Depends(get_user_id),
+    db: aiosqlite.Connection = Depends(get_db),
 ):
     cur = await db.execute(
-        "SELECT role, content, created_at FROM messages WHERE session_id = ? ORDER BY id ASC",
-        (session_id,),
+        """
+        SELECT messages.role, messages.content, messages.created_at
+        FROM messages
+        JOIN sessions ON sessions.id = messages.session_id
+        WHERE messages.session_id = ? AND sessions.user_id = ?
+        ORDER BY messages.id ASC
+        """,
+        (session_id, user_id),
     )
     rows = await cur.fetchall()
     return [dict(r) for r in rows]
@@ -57,17 +83,38 @@ async def session_messages(
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(
-    session_id: str, db: aiosqlite.Connection = Depends(get_db)
+    session_id: str,
+    user_id: str = Depends(get_user_id),
+    db: aiosqlite.Connection = Depends(get_db),
 ):
-    await db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    await db.execute(
+        """
+        DELETE FROM messages
+        WHERE session_id IN (
+            SELECT id FROM sessions WHERE id = ? AND user_id = ?
+        )
+        """,
+        (session_id, user_id),
+    )
+    await db.execute(
+        "DELETE FROM sessions WHERE id = ? AND user_id = ?",
+        (session_id, user_id),
+    )
     await db.commit()
     return {"deleted": session_id}
 
 
 @router.post("/permissions/{request_id}")
-async def answer_permission(request_id: str, body: PermissionDecisionBody):
+async def answer_permission(
+    request_id: str,
+    body: PermissionDecisionBody,
+    user_id: str = Depends(get_user_id),
+):
     pending = _pending_permissions.pop(request_id, None)
     if pending is None:
+        raise HTTPException(404, "Permission request not found or already answered")
+    if pending.user_id != user_id:
+        _pending_permissions[request_id] = pending
         raise HTTPException(404, "Permission request not found or already answered")
     if not pending.future.done():
         pending.future.set_result(body.allow)
@@ -75,20 +122,36 @@ async def answer_permission(request_id: str, body: PermissionDecisionBody):
 
 
 @router.post("/ask")
-async def ask_stream(body: AskBody, db: aiosqlite.Connection = Depends(get_db)):
+async def ask_stream(
+    body: AskBody,
+    user_id: str = Depends(get_user_id),
+    db: aiosqlite.Connection = Depends(get_db),
+):
     if not body.message.strip():
         raise HTTPException(400, "Empty message")
 
     session_id = body.session_id or str(uuid.uuid4())
+    if body.session_id:
+        cur = await db.execute("SELECT user_id FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        if row is not None and row["user_id"] != user_id:
+            raise HTTPException(404, "Session not found")
+
     # Ensure session exists.
     await db.execute(
-        "INSERT OR IGNORE INTO sessions (id, title) VALUES (?, ?)",
-        (session_id, body.message[:60]),
+        "INSERT OR IGNORE INTO sessions (id, user_id, title) VALUES (?, ?, ?)",
+        (session_id, user_id, body.message[:60]),
     )
     # Load prior turns for context.
     cur = await db.execute(
-        "SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC",
-        (session_id,),
+        """
+        SELECT messages.role, messages.content
+        FROM messages
+        JOIN sessions ON sessions.id = messages.session_id
+        WHERE messages.session_id = ? AND sessions.user_id = ?
+        ORDER BY messages.id ASC
+        """,
+        (session_id, user_id),
     )
     history = [dict(r) for r in await cur.fetchall()]
 
@@ -125,6 +188,7 @@ async def ask_stream(body: AskBody, db: aiosqlite.Connection = Depends(get_db)):
             pending_for_stream.add(request_id)
             _pending_permissions[request_id] = PendingPermission(
                 session_id=session_id,
+                user_id=user_id,
                 future=future,
             )
             await events.put(

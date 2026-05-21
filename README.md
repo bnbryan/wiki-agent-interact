@@ -60,4 +60,6 @@ cd frontend && npm install && npm run dev
 
 仅本地一份 `data/app.db` (SQLite)，存：
 - 上传文件元数据 (用于列表展示)
-- 对话会话与消息历史
+- 按浏览器用户隔离的对话会话与消息历史
+
+聊天接口会读取 `X-Wiki-User-Id` 请求头。前端会在首次打开时自动生成并保存在浏览器 `localStorage`，因此不同浏览器/设备的会话列表彼此隔离。

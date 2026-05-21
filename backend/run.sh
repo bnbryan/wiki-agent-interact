@@ -16,5 +16,11 @@ fi
 source .venv/bin/activate
 
 echo "Claude CLI: ${CLAUDE_CLI_PATH:-$(command -v claude || true)}"
+echo "API Key: ${ANTHROPIC_API_KEY:+***set***}"
+echo "Base URL: ${ANTHROPIC_BASE_URL:-default}"
+
+# Ensure environment variables are inherited
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-}"
 
 exec uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
