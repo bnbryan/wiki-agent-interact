@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS wikis (
 
 CREATE TABLE IF NOT EXISTS sessions (
     id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL DEFAULT 'default',
     title       TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -32,6 +33,16 @@ CREATE TABLE IF NOT EXISTS messages (
 async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA)
+        cur = await db.execute("PRAGMA table_info(sessions)")
+        columns = {row[1] for row in await cur.fetchall()}
+        if "user_id" not in columns:
+            await db.execute(
+                "ALTER TABLE sessions ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'"
+            )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_user_created "
+            "ON sessions (user_id, created_at DESC)"
+        )
         await db.commit()
 
 

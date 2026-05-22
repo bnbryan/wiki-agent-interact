@@ -34,6 +34,42 @@ export interface PermissionRequest {
   decision_reason?: string | null;
 }
 
+const USER_ID_STORAGE_KEY = "wiki-agent-user-id";
+let cachedUserId: string | null = null;
+
+export function getCurrentUserId(): string {
+  if (cachedUserId) return cachedUserId;
+
+  try {
+    cachedUserId = window.localStorage.getItem(USER_ID_STORAGE_KEY);
+  } catch {
+    cachedUserId = null;
+  }
+
+  if (!cachedUserId) {
+    cachedUserId = `web-${createId()}`;
+    try {
+      window.localStorage.setItem(USER_ID_STORAGE_KEY, cachedUserId);
+    } catch {
+      // Keep the in-memory id for this tab if localStorage is unavailable.
+    }
+  }
+
+  return cachedUserId;
+}
+
+function createId(): string {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function chatHeaders(extra?: HeadersInit): HeadersInit {
+  return {
+    ...extra,
+    "X-Wiki-User-Id": getCurrentUserId(),
+  };
+}
+
 export async function listWikis(): Promise<WikiItem[]> {
   const r = await fetch("/api/wiki/list");
   if (!r.ok) throw new Error(await r.text());
@@ -64,19 +100,24 @@ export async function deleteWiki(
 }
 
 export async function listSessions(): Promise<Session[]> {
-  const r = await fetch("/api/chat/sessions");
+  const r = await fetch("/api/chat/sessions", { headers: chatHeaders() });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 
 export async function getSessionMessages(id: string): Promise<Message[]> {
-  const r = await fetch(`/api/chat/sessions/${id}/messages`);
+  const r = await fetch(`/api/chat/sessions/${id}/messages`, {
+    headers: chatHeaders(),
+  });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  const r = await fetch(`/api/chat/sessions/${id}`, { method: "DELETE" });
+  const r = await fetch(`/api/chat/sessions/${id}`, {
+    method: "DELETE",
+    headers: chatHeaders(),
+  });
   if (!r.ok) throw new Error(await r.text());
 }
 
@@ -86,7 +127,7 @@ export async function answerPermission(
 ): Promise<void> {
   const r = await fetch(`/api/chat/permissions/${requestId}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: chatHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ allow }),
   });
   if (!r.ok) throw new Error(await r.text());
@@ -106,7 +147,7 @@ export async function streamAsk(
 ): Promise<void> {
   const r = await fetch("/api/chat/ask", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: chatHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
     signal,
   });

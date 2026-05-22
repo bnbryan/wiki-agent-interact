@@ -16,3 +16,6 @@ data/
 .DS_Store
 .vscode/
 .idea/
+
+# Local debug scripts
+/test_claude_sdk.py
