@@ -160,8 +160,9 @@ async def ask(
                         )
                 if msg.subtype != "success":
                     raise RuntimeError(f"Claude Code returned {msg.subtype}")
-                # Fallback: return result even if streamed was True
-                if msg.result:
+                # Fallback only when nothing streamed — otherwise this duplicates
+                # the answer the client already received via StreamEvents.
+                if msg.result and not streamed:
                     yield msg.result
     except Exception as exc:
         message = str(exc)
