@@ -238,3 +238,71 @@ def test_ask_permission_callback_maps_handler_decisions(fake_sdk_types, monkeypa
         }
 
     __import__("asyncio").run(exercise_callback())
+
+
+def test_ask_forces_interactive_permissions_when_handler_is_present(
+    fake_sdk_types, monkeypatch
+):
+    captured = {}
+    monkeypatch.setattr(fake_sdk_types, "CLAUDE_PERMISSION_MODE", "dontAsk")
+
+    def fake_query(prompt, options):
+        captured["options"] = options
+
+        async def gen():
+            yield FakeResultMessage(result="ok")
+
+        return gen()
+
+    monkeypatch.setattr(fake_sdk_types, "query", fake_query)
+
+    async def permission_handler(payload):
+        return True
+
+    __import__("asyncio").run(
+        collect(fake_sdk_types.ask("question", permission_handler=permission_handler))
+    )
+
+    assert captured["options"].permission_mode == "default"
+    assert captured["options"].can_use_tool is not None
+
+
+def test_ask_streams_followup_user_messages_to_same_agent(fake_sdk_types, monkeypatch):
+    captured = {}
+
+    async def followups():
+        yield "继续"
+        yield "停止"
+
+    def fake_query(prompt, options):
+        captured["prompt"] = prompt
+
+        async def gen():
+            yield FakeResultMessage(result="ok")
+
+        return gen()
+
+    monkeypatch.setattr(fake_sdk_types, "query", fake_query)
+
+    __import__("asyncio").run(
+        collect(
+            fake_sdk_types.ask(
+                "question",
+                user_message_stream=followups(),
+            )
+        )
+    )
+
+    async def collect_prompt_events():
+        events = []
+        async for item in captured["prompt"]:
+            events.append(item)
+        return events
+
+    prompt_events = __import__("asyncio").run(collect_prompt_events())
+
+    assert [event["message"]["content"] for event in prompt_events] == [
+        "User question: question",
+        "继续",
+        "停止",
+    ]

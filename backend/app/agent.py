@@ -26,6 +26,8 @@ from .config import WIKI_REPO_DIR
 
 CLAUDE_PERMISSION_MODE = os.environ.get("CLAUDE_PERMISSION_MODE", "default")
 CLAUDE_CLI_PATH = os.environ.get("CLAUDE_CLI_PATH") or shutil.which("claude")
+INTERACTIVE_PERMISSION_MODE = "default"
+NON_INTERACTIVE_PERMISSION_MODES = {"dontAsk", "plan"}
 
 PermissionHandler = Callable[[dict], Awaitable[bool]]
 
@@ -47,6 +49,7 @@ async def ask(
     question: str,
     history: list[dict] | None = None,
     permission_handler: PermissionHandler | None = None,
+    user_message_stream: AsyncIterator[str] | None = None,
 ) -> AsyncIterator[str]:
     """Stream the agent's textual answer.
 
@@ -76,6 +79,14 @@ async def ask(
             "parent_tool_use_id": None,
             "session_id": "",
         }
+        if user_message_stream is not None:
+            async for message in user_message_stream:
+                yield {
+                    "type": "user",
+                    "message": {"role": "user", "content": message},
+                    "parent_tool_use_id": None,
+                    "session_id": "",
+                }
 
     async def can_use_tool(
         tool_name: str,
@@ -103,18 +114,26 @@ async def ask(
             return PermissionResultAllow()
         return PermissionResultDeny(message="User denied this tool use.")
 
+    permission_mode = CLAUDE_PERMISSION_MODE
+    if permission_handler is not None and permission_mode in NON_INTERACTIVE_PERMISSION_MODES:
+        permission_mode = INTERACTIVE_PERMISSION_MODE
+
     options = ClaudeAgentOptions(
         cwd=str(WIKI_REPO_DIR),
         cli_path=CLAUDE_CLI_PATH,
         setting_sources=["user", "project"],  # load user + project settings
-        permission_mode=CLAUDE_PERMISSION_MODE,
+        permission_mode=permission_mode,
         can_use_tool=can_use_tool if permission_handler is not None else None,
         include_partial_messages=True,  # token-level streaming
         stderr=collect_stderr,
     )
 
     streamed = False
-    sdk_prompt = prompt_stream() if permission_handler is not None else prompt
+    sdk_prompt = (
+        prompt_stream()
+        if permission_handler is not None or user_message_stream is not None
+        else prompt
+    )
     try:
         async for msg in query(prompt=sdk_prompt, options=options):
             if isinstance(msg, StreamEvent):

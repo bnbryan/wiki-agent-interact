@@ -9,6 +9,12 @@ export interface WikiItem {
   uploaded_at: string;
 }
 
+export interface WikiUploadResult {
+  category: Category;
+  filename: string;
+  size: number;
+}
+
 export interface Session {
   id: string;
   title: string | null;
@@ -79,13 +85,62 @@ export async function listWikis(): Promise<WikiItem[]> {
 export async function uploadWiki(
   file: File,
   category: TextCategory,
-): Promise<WikiItem> {
+): Promise<WikiUploadResult> {
   const fd = new FormData();
   fd.append("file", file);
   fd.append("category", category);
   const r = await fetch("/api/wiki/upload", { method: "POST", body: fd });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
+}
+
+export async function streamWikiIngest(
+  body: { category: Category; filename: string },
+  handlers: {
+    onRun?: (runId: string) => void;
+    onWaiting?: () => void;
+    onDelta?: (text: string) => void;
+    onPermission?: (request: PermissionRequest) => void;
+    onError?: (msg: string) => void;
+    onDone?: () => void;
+  },
+  signal?: AbortSignal,
+): Promise<void> {
+  const r = await fetch("/api/wiki/ingest", {
+    method: "POST",
+    headers: chatHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!r.ok || !r.body) {
+    handlers.onError?.(await r.text().catch(() => `HTTP ${r.status}`));
+    return;
+  }
+
+  await readSseStream(
+    r,
+    {
+      onRun: handlers.onRun,
+      onWaiting: handlers.onWaiting,
+      onDelta: handlers.onDelta,
+      onPermission: handlers.onPermission,
+      onError: handlers.onError,
+      onDone: handlers.onDone,
+    },
+    signal,
+  );
+}
+
+export async function replyWikiIngest(
+  runId: string,
+  message: string,
+): Promise<void> {
+  const r = await fetch(`/api/wiki/ingest/${encodeURIComponent(runId)}/reply`, {
+    method: "POST",
+    headers: chatHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ message }),
+  });
+  if (!r.ok) throw new Error(await r.text());
 }
 
 export async function deleteWiki(
@@ -137,6 +192,8 @@ export async function answerPermission(
 export async function streamAsk(
   body: { session_id: string | null; message: string },
   handlers: {
+    onRun?: (runId: string) => void;
+    onWaiting?: () => void;
     onSession?: (id: string) => void;
     onDelta?: (text: string) => void;
     onPermission?: (request: PermissionRequest) => void;
@@ -156,7 +213,23 @@ export async function streamAsk(
     return;
   }
 
-  const reader = r.body.getReader();
+  await readSseStream(r, handlers, signal);
+}
+
+async function readSseStream(
+  r: Response,
+  handlers: {
+    onRun?: (runId: string) => void;
+    onWaiting?: () => void;
+    onSession?: (id: string) => void;
+    onDelta?: (text: string) => void;
+    onPermission?: (request: PermissionRequest) => void;
+    onError?: (msg: string) => void;
+    onDone?: () => void;
+  },
+  signal?: AbortSignal,
+): Promise<void> {
+  const reader = r.body!.getReader();
   const decoder = new TextDecoder();
   let buf = "";
 
@@ -173,7 +246,11 @@ export async function streamAsk(
         buf = buf.slice(sep + 2);
         const evt = parseSseEvent(raw);
         if (!evt) continue;
-        if (evt.event === "session") {
+        if (evt.event === "run") {
+          handlers.onRun?.(JSON.parse(evt.data).run_id);
+        } else if (evt.event === "waiting") {
+          handlers.onWaiting?.();
+        } else if (evt.event === "session") {
           handlers.onSession?.(JSON.parse(evt.data).session_id);
         } else if (evt.event === "delta") {
           handlers.onDelta?.(JSON.parse(evt.data).text);
