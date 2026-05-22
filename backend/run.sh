@@ -18,6 +18,7 @@ source .venv/bin/activate
 echo "Claude CLI: ${CLAUDE_CLI_PATH:-$(command -v claude || true)}"
 echo "API Key: ${ANTHROPIC_API_KEY:+***set***}"
 echo "Base URL: ${ANTHROPIC_BASE_URL:-default}"
+echo "Claude permission mode: ${CLAUDE_PERMISSION_MODE:-default}"
 
 # Ensure environment variables are inherited
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
